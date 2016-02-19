@@ -16,6 +16,43 @@ describe("$animateCss", function() {
 
   describe("without animation", function() {
 
+    it("should not alter the provided options input in any way", inject(function($animateCss) {
+      var initialOptions = {
+        from: { height: '50px' },
+        to: { width: '50px' },
+        addClass: 'one',
+        removeClass: 'two'
+      };
+
+      var copiedOptions = copy(initialOptions);
+
+      expect(copiedOptions).toEqual(initialOptions);
+      $animateCss(element, copiedOptions).start();
+      expect(copiedOptions).toEqual(initialOptions);
+    }));
+
+    it("should not create a copy of the provided options if they have already been prepared earlier",
+      inject(function($animateCss, $$rAF) {
+
+      var options = {
+        from: { height: '50px' },
+        to: { width: '50px' },
+        addClass: 'one',
+        removeClass: 'two'
+      };
+
+      options.$$prepared = true;
+      var runner = $animateCss(element, options).start();
+      runner.end();
+
+      $$rAF.flush();
+
+      expect(options.addClass).toBeFalsy();
+      expect(options.removeClass).toBeFalsy();
+      expect(options.to).toBeFalsy();
+      expect(options.from).toBeFalsy();
+    }));
+
     it("should apply the provided [from] CSS to the element", inject(function($animateCss) {
       $animateCss(element, { from: { height: '50px' }}).start();
       expect(element.css('height')).toBe('50px');
@@ -114,6 +151,38 @@ describe("$animateCss", function() {
       triggerRAF();
       expect(cancelSpy).toHaveBeenCalled();
       expect(doneSpy).not.toHaveBeenCalled();
+    }));
+
+    it("should not bother applying the provided [from] and [to] styles to the element if [cleanupStyles] is present",
+      inject(function($animateCss, $rootScope) {
+
+      var animator = $animateCss(element, {
+        cleanupStyles: true,
+        from: { width: '100px' },
+        to: { width: '900px', height: '1000px' }
+      });
+
+      assertStyleIsEmpty(element, 'width');
+      assertStyleIsEmpty(element, 'height');
+
+      var runner = animator.start();
+
+      assertStyleIsEmpty(element, 'width');
+      assertStyleIsEmpty(element, 'height');
+
+      triggerRAF();
+
+      assertStyleIsEmpty(element, 'width');
+      assertStyleIsEmpty(element, 'height');
+
+      runner.end();
+
+      assertStyleIsEmpty(element, 'width');
+      assertStyleIsEmpty(element, 'height');
+
+      function assertStyleIsEmpty(element, prop) {
+        expect(element[0].style.getPropertyValue(prop)).toBeFalsy();
+      }
     }));
   });
 

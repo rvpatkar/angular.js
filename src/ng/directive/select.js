@@ -2,6 +2,15 @@
 
 var noopNgModelController = { $setViewValue: noop, $render: noop };
 
+function chromeHack(optionElement) {
+  // Workaround for https://code.google.com/p/chromium/issues/detail?id=381459
+  // Adding an <option selected="selected"> element to a <select required="required"> should
+  // automatically select the new element
+  if (optionElement[0].hasAttribute('selected')) {
+    optionElement[0].selected = true;
+  }
+}
+
 /**
  * @ngdoc type
  * @name  select.SelectController
@@ -71,12 +80,17 @@ var SelectController =
 
   // Tell the select control that an option, with the given value, has been added
   self.addOption = function(value, element) {
+    // Skip comment nodes, as they only pollute the `optionsMap`
+    if (element[0].nodeType === NODE_TYPE_COMMENT) return;
+
     assertNotHasOwnProperty(value, '"option value"');
     if (value === '') {
       self.emptyOption = element;
     }
     var count = optionsMap.get(value) || 0;
     optionsMap.put(value, count + 1);
+    self.ngModelCtrl.$render();
+    chromeHack(element);
   };
 
   // Tell the select control that an option, with the given value, has been removed
@@ -98,6 +112,39 @@ var SelectController =
   self.hasOption = function(value) {
     return !!optionsMap.get(value);
   };
+
+
+  self.registerOption = function(optionScope, optionElement, optionAttrs, interpolateValueFn, interpolateTextFn) {
+
+    if (interpolateValueFn) {
+      // The value attribute is interpolated
+      var oldVal;
+      optionAttrs.$observe('value', function valueAttributeObserveAction(newVal) {
+        if (isDefined(oldVal)) {
+          self.removeOption(oldVal);
+        }
+        oldVal = newVal;
+        self.addOption(newVal, optionElement);
+      });
+    } else if (interpolateTextFn) {
+      // The text content is interpolated
+      optionScope.$watch(interpolateTextFn, function interpolateWatchAction(newVal, oldVal) {
+        optionAttrs.$set('value', newVal);
+        if (oldVal !== newVal) {
+          self.removeOption(oldVal);
+        }
+        self.addOption(newVal, optionElement);
+      });
+    } else {
+      // The value attribute is static
+      self.addOption(optionAttrs.value, optionElement);
+    }
+
+    optionElement.on('$destroy', function() {
+      self.removeOption(optionAttrs.value);
+      self.ngModelCtrl.$render();
+    });
+  };
 }];
 
 /**
@@ -110,7 +157,7 @@ var SelectController =
  *
  * The `select` directive is used together with {@link ngModel `ngModel`} to provide data-binding
  * between the scope and the `<select>` control (including setting default values).
- * Ìt also handles dynamic `<option>` elements, which can be added using the {@link ngRepeat `ngRepeat}` or
+ * It also handles dynamic `<option>` elements, which can be added using the {@link ngRepeat `ngRepeat}` or
  * {@link ngOptions `ngOptions`} directives.
  *
  * When an item in the `<select>` menu is selected, the value of the selected option will be bound
@@ -120,7 +167,7 @@ var SelectController =
  *
  * <div class="alert alert-warning">
  * Note that the value of a `select` directive used without `ngOptions` is always a string.
- * When the model needs to be bound to a non-string value, you must either explictly convert it
+ * When the model needs to be bound to a non-string value, you must either explicitly convert it
  * using a directive (see example below) or use `ngOptions` to specify the set of options.
  * This is because an option element can only be bound to string values at present.
  * </div>
@@ -143,6 +190,8 @@ var SelectController =
  *
  * @param {string} ngModel Assignable angular expression to data-bind to.
  * @param {string=} name Property name of the form under which the control is published.
+ * @param {string=} multiple Allows multiple options to be selected. The selected values will be
+ *     bound to the model as an array.
  * @param {string=} required Sets `required` validation error key if the value is not entered.
  * @param {string=} ngRequired Adds required attribute and required validation constraint to
  * the element when the ngRequired expression evaluates to true. Use ngRequired instead of required
@@ -166,7 +215,7 @@ var SelectController =
  *     </select><br>
  *
  *     <label for="singleSelect"> Single select with "not selected" option and dynamic option values: </label><br>
- *     <select name="singleSelect" ng-model="data.singleSelect">
+ *     <select name="singleSelect" id="singleSelect" ng-model="data.singleSelect">
  *       <option value="">---Please select---</option> <!-- not selected / blank option -->
  *       <option value="{{data.option1}}">Option 1</option> <!-- interpolation -->
  *       <option value="option-2">Option 2</option>
@@ -207,7 +256,7 @@ var SelectController =
  * <div ng-controller="ExampleController">
  *   <form name="myForm">
  *     <label for="repeatSelect"> Repeat select: </label>
- *     <select name="repeatSelect" ng-model="data.repeatSelect">
+ *     <select name="repeatSelect" id="repeatSelect" ng-model="data.repeatSelect">
  *       <option ng-repeat="option in data.availableOptions" value="{{option.id}}">{{option.name}}</option>
  *     </select>
  *   </form>
@@ -219,7 +268,7 @@ var SelectController =
  *  angular.module('ngrepeatSelect', [])
  *    .controller('ExampleController', ['$scope', function($scope) {
  *      $scope.data = {
- *       singleSelect: null,
+ *       repeatSelect: null,
  *       availableOptions: [
  *         {id: '1', name: 'Option A'},
  *         {id: '2', name: 'Option B'},
@@ -308,7 +357,14 @@ var selectDirective = function() {
     restrict: 'E',
     require: ['select', '?ngModel'],
     controller: SelectController,
-    link: function(scope, element, attr, ctrls) {
+    priority: 1,
+    link: {
+      pre: selectPreLink,
+      post: selectPostLink
+    }
+  };
+
+  function selectPreLink(scope, element, attr, ctrls) {
 
       // if ngModel is not defined, we don't need to do anything
       var ngModelCtrl = ctrls[1];
@@ -317,13 +373,6 @@ var selectDirective = function() {
       var selectCtrl = ctrls[0];
 
       selectCtrl.ngModelCtrl = ngModelCtrl;
-
-      // We delegate rendering to the `writeValue` method, which can be changed
-      // if the select can have multiple selected values or if the options are being
-      // generated by `ngOptions`
-      ngModelCtrl.$render = function() {
-        selectCtrl.writeValue(ngModelCtrl.$viewValue);
-      };
 
       // When the selected item(s) changes we delegate getting the value of the select control
       // to the `readValue` method, which can be changed if the select can have multiple
@@ -378,7 +427,23 @@ var selectDirective = function() {
 
       }
     }
-  };
+
+    function selectPostLink(scope, element, attrs, ctrls) {
+      // if ngModel is not defined, we don't need to do anything
+      var ngModelCtrl = ctrls[1];
+      if (!ngModelCtrl) return;
+
+      var selectCtrl = ctrls[0];
+
+      // We delegate rendering to the `writeValue` method, which can be changed
+      // if the select can have multiple selected values or if the options are being
+      // generated by `ngOptions`.
+      // This must be done in the postLink fn to prevent $render to be called before
+      // all nodes have been linked correctly.
+      ngModelCtrl.$render = function() {
+        selectCtrl.writeValue(ngModelCtrl.$viewValue);
+      };
+    }
 };
 
 
@@ -386,35 +451,23 @@ var selectDirective = function() {
 // of dynamically created (and destroyed) option elements to their containing select
 // directive via its controller.
 var optionDirective = ['$interpolate', function($interpolate) {
-
-  function chromeHack(optionElement) {
-    // Workaround for https://code.google.com/p/chromium/issues/detail?id=381459
-    // Adding an <option selected="selected"> element to a <select required="required"> should
-    // automatically select the new element
-    if (optionElement[0].hasAttribute('selected')) {
-      optionElement[0].selected = true;
-    }
-  }
-
   return {
     restrict: 'E',
     priority: 100,
     compile: function(element, attr) {
-
       if (isDefined(attr.value)) {
         // If the value attribute is defined, check if it contains an interpolation
-        var valueInterpolated = $interpolate(attr.value, true);
+        var interpolateValueFn = $interpolate(attr.value, true);
       } else {
         // If the value attribute is not defined then we fall back to the
         // text content of the option element, which may be interpolated
-        var interpolateFn = $interpolate(element.text(), true);
-        if (!interpolateFn) {
+        var interpolateTextFn = $interpolate(element.text(), true);
+        if (!interpolateTextFn) {
           attr.$set('value', element.text());
         }
       }
 
       return function(scope, element, attr) {
-
         // This is an optimization over using ^^ since we don't want to have to search
         // all the way to the root of the DOM for every single option element
         var selectCtrlName = '$selectController',
@@ -422,44 +475,8 @@ var optionDirective = ['$interpolate', function($interpolate) {
             selectCtrl = parent.data(selectCtrlName) ||
               parent.parent().data(selectCtrlName); // in case we are in optgroup
 
-        function addOption(optionValue) {
-          selectCtrl.addOption(optionValue, element);
-          selectCtrl.ngModelCtrl.$render();
-          chromeHack(element);
-        }
-
-        // Only update trigger option updates if this is an option within a `select`
-        // that also has `ngModel` attached
-        if (selectCtrl && selectCtrl.ngModelCtrl) {
-
-          if (valueInterpolated) {
-            // The value attribute is interpolated
-            var oldVal;
-            attr.$observe('value', function valueAttributeObserveAction(newVal) {
-              if (isDefined(oldVal)) {
-                selectCtrl.removeOption(oldVal);
-              }
-              oldVal = newVal;
-              addOption(newVal);
-            });
-          } else if (interpolateFn) {
-            // The text content is interpolated
-            scope.$watch(interpolateFn, function interpolateWatchAction(newVal, oldVal) {
-              attr.$set('value', newVal);
-              if (oldVal !== newVal) {
-                selectCtrl.removeOption(oldVal);
-              }
-              addOption(newVal);
-            });
-          } else {
-            // The value attribute is static
-            addOption(attr.value);
-          }
-
-          element.on('$destroy', function() {
-            selectCtrl.removeOption(attr.value);
-            selectCtrl.ngModelCtrl.$render();
-          });
+        if (selectCtrl) {
+          selectCtrl.registerOption(scope, element, attr, interpolateValueFn, interpolateTextFn);
         }
       };
     }

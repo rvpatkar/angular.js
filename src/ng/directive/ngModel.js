@@ -14,7 +14,9 @@ var VALID_CLASS = 'ng-valid',
     DIRTY_CLASS = 'ng-dirty',
     UNTOUCHED_CLASS = 'ng-untouched',
     TOUCHED_CLASS = 'ng-touched',
-    PENDING_CLASS = 'ng-pending';
+    PENDING_CLASS = 'ng-pending',
+    EMPTY_CLASS = 'ng-empty',
+    NOT_EMPTY_CLASS = 'ng-not-empty';
 
 var ngModelMinErr = minErr('ngModel');
 
@@ -22,7 +24,9 @@ var ngModelMinErr = minErr('ngModel');
  * @ngdoc type
  * @name ngModel.NgModelController
  *
- * @property {string} $viewValue Actual string value in the view.
+ * @property {*} $viewValue The actual value from the control's view. For `input` elements, this is a
+ * String. See {@link ngModel.NgModelController#$setViewValue} for information about when the $viewValue
+ * is set.
  * @property {*} $modelValue The value in the model that the control is bound to.
  * @property {Array.<Function>} $parsers Array of functions to execute, as a pipeline, whenever
        the control reads value from the DOM. The functions are called in array order, each passing
@@ -316,6 +320,17 @@ var NgModelController = ['$scope', '$exceptionHandler', '$attrs', '$element', '$
     return isUndefined(value) || value === '' || value === null || value !== value;
   };
 
+  this.$$updateEmptyClasses = function(value) {
+    if (ctrl.$isEmpty(value)) {
+      $animate.removeClass($element, NOT_EMPTY_CLASS);
+      $animate.addClass($element, EMPTY_CLASS);
+    } else {
+      $animate.removeClass($element, EMPTY_CLASS);
+      $animate.addClass($element, NOT_EMPTY_CLASS);
+    }
+  };
+
+
   var currentValidationRunId = 0;
 
   /**
@@ -433,11 +448,14 @@ var NgModelController = ['$scope', '$exceptionHandler', '$attrs', '$element', '$
    * which may be caused by a pending debounced event or because the input is waiting for a some
    * future event.
    *
-   * If you have an input that uses `ng-model-options` to set up debounced events or events such
-   * as blur you can have a situation where there is a period when the `$viewValue`
-   * is out of synch with the ngModel's `$modelValue`.
+   * If you have an input that uses `ng-model-options` to set up debounced updates or updates that
+   * depend on special events such as blur, you can have a situation where there is a period when
+   * the `$viewValue` is out of sync with the ngModel's `$modelValue`.
    *
-   * In this case, you can run into difficulties if you try to update the ngModel's `$modelValue`
+   * In this case, you can use `$rollbackViewValue()` to manually cancel the debounced / future update
+   * and reset the input to the last committed view value.
+   *
+   * It is also possible that you run into difficulties if you try to update the ngModel's `$modelValue`
    * programmatically before these debounced/future events have resolved/occurred, because Angular's
    * dirty checking mechanism is not able to tell whether the model has actually changed or not.
    *
@@ -450,39 +468,63 @@ var NgModelController = ['$scope', '$exceptionHandler', '$attrs', '$element', '$
    *     angular.module('cancel-update-example', [])
    *
    *     .controller('CancelUpdateController', ['$scope', function($scope) {
-   *       $scope.resetWithCancel = function(e) {
+   *       $scope.model = {};
+   *
+   *       $scope.setEmpty = function(e, value, rollback) {
    *         if (e.keyCode == 27) {
-   *           $scope.myForm.myInput1.$rollbackViewValue();
-   *           $scope.myValue = '';
-   *         }
-   *       };
-   *       $scope.resetWithoutCancel = function(e) {
-   *         if (e.keyCode == 27) {
-   *           $scope.myValue = '';
+   *           e.preventDefault();
+   *           if (rollback) {
+   *             $scope.myForm[value].$rollbackViewValue();
+   *           }
+   *           $scope.model[value] = '';
    *         }
    *       };
    *     }]);
    *   </file>
    *   <file name="index.html">
    *     <div ng-controller="CancelUpdateController">
-   *       <p>Try typing something in each input.  See that the model only updates when you
-   *          blur off the input.
-   *        </p>
-   *        <p>Now see what happens if you start typing then press the Escape key</p>
+   *        <p>Both of these inputs are only updated if they are blurred. Hitting escape should
+   *        empty them. Follow these steps and observe the difference:</p>
+   *       <ol>
+   *         <li>Type something in the input. You will see that the model is not yet updated</li>
+   *         <li>Press the Escape key.
+   *           <ol>
+   *             <li> In the first example, nothing happens, because the model is already '', and no
+   *             update is detected. If you blur the input, the model will be set to the current view.
+   *             </li>
+   *             <li> In the second example, the pending update is cancelled, and the input is set back
+   *             to the last committed view value (''). Blurring the input does nothing.
+   *             </li>
+   *           </ol>
+   *         </li>
+   *       </ol>
    *
    *       <form name="myForm" ng-model-options="{ updateOn: 'blur' }">
-   *         <p id="inputDescription1">With $rollbackViewValue()</p>
-   *         <input name="myInput1" aria-describedby="inputDescription1" ng-model="myValue"
-   *                ng-keydown="resetWithCancel($event)"><br/>
-   *         myValue: "{{ myValue }}"
+   *         <div>
+   *        <p id="inputDescription1">Without $rollbackViewValue():</p>
+   *         <input name="value1" aria-describedby="inputDescription1" ng-model="model.value1"
+   *                ng-keydown="setEmpty($event, 'value1')">
+   *         value1: "{{ model.value1 }}"
+   *         </div>
    *
-   *         <p id="inputDescription2">Without $rollbackViewValue()</p>
-   *         <input name="myInput2" aria-describedby="inputDescription2" ng-model="myValue"
-   *                ng-keydown="resetWithoutCancel($event)"><br/>
-   *         myValue: "{{ myValue }}"
+   *         <div>
+   *        <p id="inputDescription2">With $rollbackViewValue():</p>
+   *         <input name="value2" aria-describedby="inputDescription2" ng-model="model.value2"
+   *                ng-keydown="setEmpty($event, 'value2', true)">
+   *         value2: "{{ model.value2 }}"
+   *         </div>
    *       </form>
    *     </div>
    *   </file>
+       <file name="style.css">
+          div {
+            display: table-cell;
+          }
+          div:nth-child(1) {
+            padding-right: 30px;
+          }
+
+        </file>
    * </example>
    */
   this.$rollbackViewValue = function() {
@@ -596,7 +638,7 @@ var NgModelController = ['$scope', '$exceptionHandler', '$attrs', '$element', '$
       forEach(ctrl.$asyncValidators, function(validator, name) {
         var promise = validator(modelValue, viewValue);
         if (!isPromiseLike(promise)) {
-          throw ngModelMinErr("$asyncValidators",
+          throw ngModelMinErr('nopromise',
             "Expected asynchronous validator to return a promise but got '{0}' instead.", promise);
         }
         setValidity(name, undefined);
@@ -652,6 +694,7 @@ var NgModelController = ['$scope', '$exceptionHandler', '$attrs', '$element', '$
     if (ctrl.$$lastCommittedViewValue === viewValue && (viewValue !== '' || !ctrl.$$hasNativeValidators)) {
       return;
     }
+    ctrl.$$updateEmptyClasses(viewValue);
     ctrl.$$lastCommittedViewValue = viewValue;
 
     // change to dirty
@@ -750,7 +793,7 @@ var NgModelController = ['$scope', '$exceptionHandler', '$attrs', '$element', '$
    * However, custom controls might also pass objects to this method. In this case, we should make
    * a copy of the object before passing it to `$setViewValue`. This is because `ngModel` does not
    * perform a deep watch of objects, it only looks for a change of identity. If you only change
-   * the property of the object then ngModel will not realise that the object has changed and
+   * the property of the object then ngModel will not realize that the object has changed and
    * will not invoke the `$parsers` and `$validators` pipelines. For this reason, you should
    * not change properties of the copy once it has been passed to `$setViewValue`.
    * Otherwise you may cause the model value on the scope to change incorrectly.
@@ -834,6 +877,7 @@ var NgModelController = ['$scope', '$exceptionHandler', '$attrs', '$element', '$
         viewValue = formatters[idx](viewValue);
       }
       if (ctrl.$viewValue !== viewValue) {
+        ctrl.$$updateEmptyClasses(viewValue);
         ctrl.$viewValue = ctrl.$$lastCommittedViewValue = viewValue;
         ctrl.$render();
 
@@ -864,7 +908,8 @@ var NgModelController = ['$scope', '$exceptionHandler', '$attrs', '$element', '$
  *   require.
  * - Providing validation behavior (i.e. required, number, email, url).
  * - Keeping the state of the control (valid/invalid, dirty/pristine, touched/untouched, validation errors).
- * - Setting related css classes on the element (`ng-valid`, `ng-invalid`, `ng-dirty`, `ng-pristine`, `ng-touched`, `ng-untouched`) including animations.
+ * - Setting related css classes on the element (`ng-valid`, `ng-invalid`, `ng-dirty`, `ng-pristine`, `ng-touched`,
+ *   `ng-untouched`, `ng-empty`, `ng-not-empty`) including animations.
  * - Registering the control with its parent {@link ng.directive:form form}.
  *
  * Note: `ngModel` will try to bind to the property given by evaluating the expression on the
@@ -892,6 +937,22 @@ var NgModelController = ['$scope', '$exceptionHandler', '$attrs', '$element', '$
  *  - {@link ng.directive:select select}
  *  - {@link ng.directive:textarea textarea}
  *
+ * # Complex Models (objects or collections)
+ *
+ * By default, `ngModel` watches the model by reference, not value. This is important to know when
+ * binding inputs to models that are objects (e.g. `Date`) or collections (e.g. arrays). If only properties of the
+ * object or collection change, `ngModel` will not be notified and so the input will not be  re-rendered.
+ *
+ * The model must be assigned an entirely new object or collection before a re-rendering will occur.
+ *
+ * Some directives have options that will cause them to use a custom `$watchCollection` on the model expression
+ * - for example, `ngOptions` will do so when a `track by` clause is included in the comprehension expression or
+ * if the select is given the `multiple` attribute.
+ *
+ * The `$watchCollection()` method only does a shallow comparison, meaning that changing properties deeper than the
+ * first level of the object (or only changing the properties of an item in the collection if it's an array) will still
+ * not trigger a re-rendering of the model.
+ *
  * # CSS classes
  * The following CSS classes are added and removed on the associated input/select/textarea element
  * depending on the validity of the model.
@@ -905,13 +966,16 @@ var NgModelController = ['$scope', '$exceptionHandler', '$attrs', '$element', '$
  *  - `ng-touched`: the control has been blurred
  *  - `ng-untouched`: the control hasn't been blurred
  *  - `ng-pending`: any `$asyncValidators` are unfulfilled
+ *  - `ng-empty`: the view does not contain a value or the value is deemed "empty", as defined
+ *     by the {@link ngModel.NgModelController#$isEmpty} method
+ *  - `ng-not-empty`: the view contains a non-empty value
  *
  * Keep in mind that ngAnimate can detect each of these classes when added and removed.
  *
  * ## Animation Hooks
  *
  * Animations within models are triggered when any of the associated CSS classes are added and removed
- * on the input element which is attached to the model. These classes are: `.ng-pristine`, `.ng-dirty`,
+ * on the input element which is attached to the model. These classes include: `.ng-pristine`, `.ng-dirty`,
  * `.ng-invalid` and `.ng-valid` as well as any other validations that are performed on the model itself.
  * The animations that are triggered within ngModel are similar to how they work in ngClass and
  * animations can be hooked into using CSS transitions, keyframes as well as JS animations.
@@ -1139,12 +1203,13 @@ var DEFAULT_REGEXP = /(\s+|^)default(\s+|$)/;
           </label><br />
         </form>
         <pre>user.name = <span ng-bind="user.name"></span></pre>
+        <pre>user.data = <span ng-bind="user.data"></span></pre>
       </div>
     </file>
     <file name="app.js">
       angular.module('optionsExample', [])
         .controller('ExampleController', ['$scope', function($scope) {
-          $scope.user = { name: 'say', data: '' };
+          $scope.user = { name: 'John', data: '' };
 
           $scope.cancel = function(e) {
             if (e.keyCode == 27) {
@@ -1159,20 +1224,20 @@ var DEFAULT_REGEXP = /(\s+|^)default(\s+|$)/;
       var other = element(by.model('user.data'));
 
       it('should allow custom events', function() {
-        input.sendKeys(' hello');
+        input.sendKeys(' Doe');
         input.click();
-        expect(model.getText()).toEqual('say');
+        expect(model.getText()).toEqual('John');
         other.click();
-        expect(model.getText()).toEqual('say hello');
+        expect(model.getText()).toEqual('John Doe');
       });
 
       it('should $rollbackViewValue when model changes', function() {
-        input.sendKeys(' hello');
-        expect(input.getAttribute('value')).toEqual('say hello');
+        input.sendKeys(' Doe');
+        expect(input.getAttribute('value')).toEqual('John Doe');
         input.sendKeys(protractor.Key.ESCAPE);
-        expect(input.getAttribute('value')).toEqual('say');
+        expect(input.getAttribute('value')).toEqual('John');
         other.click();
-        expect(model.getText()).toEqual('say');
+        expect(model.getText()).toEqual('John');
       });
     </file>
   </example>
@@ -1198,7 +1263,7 @@ var DEFAULT_REGEXP = /(\s+|^)default(\s+|$)/;
     <file name="app.js">
       angular.module('optionsExample', [])
         .controller('ExampleController', ['$scope', function($scope) {
-          $scope.user = { name: 'say' };
+          $scope.user = { name: 'Igor' };
         }]);
     </file>
   </example>
